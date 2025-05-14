@@ -1,0 +1,164 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const router = express.Router();
+const AdAttempt = require('../models/AdAttempt');
+
+// ✅ Step 1: Helper to Split Prompt Text
+function splitPromptIntoSegments(prompt) {
+  const sentences = prompt
+    .split(/(?<=[.?!])\s+/)
+    .filter(s => s.trim().length > 0);
+
+  return sentences.map((text, index) => ({
+    segmentId: index + 1,
+    text,
+    audioFile: `audio_segment_${index + 1}.mp3`,
+    duration: null,
+    startTime: null
+  }));
+}
+
+// ✅ Step 2: Helper to Simulate Duration + Start Time
+function simulateDurations(segments) {
+  let currentTime = 0;
+  return segments.map(seg => {
+    const simulatedDuration = Math.max(2, Math.min(6, seg.text.length / 15));
+    const updatedSeg = {
+      ...seg,
+      duration: simulatedDuration,
+      startTime: currentTime
+    };
+    currentTime += simulatedDuration + 0.5;
+    return updatedSeg;
+  });
+}
+
+// ✅ Main Video Generation Route
+router.post('/', async (req, res) => {
+  const { userId, promoName, prompt, type, imagePath, audioPath } = req.body;
+
+  if (!userId || !promoName || !prompt || !type) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const existing = await AdAttempt.findOne({ userId, promoName });
+  if (existing && existing.isFinal) {
+    return res.status(409).json({ error: 'Ad already finalized for this promo' });
+  }
+
+  let attemptDoc = existing;
+  if (!attemptDoc) {
+    attemptDoc = new AdAttempt({
+      userId,
+      promoName,
+      prompt,
+      type,
+      attemptCount: 1
+    });
+  } else {
+    attemptDoc.attemptCount += 1;
+  }
+
+  const missing = [];
+  if (imagePath && !fs.existsSync(imagePath)) missing.push('imagePath');
+  if (audioPath && !fs.existsSync(audioPath)) missing.push('audioPath');
+  if (missing.length) {
+    return res.status(400).json({ error: 'File(s) not found', missing });
+  }
+
+  // ✅ Save video in organized path
+  const filename = `${promoName}_${Date.now()}.mp4`;
+  const folderPath = path.join(__dirname, '..', 'output', 'videos', userId);
+  const relativePath = path.join('output', 'videos', userId, filename);
+  const fullPath = path.join(folderPath, filename);
+
+  if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
+  fs.writeFileSync(fullPath, ''); // Simulate video
+
+  // ✅ Generate Sync Map
+  const segments = splitPromptIntoSegments(prompt);
+  const syncedSegments = simulateDurations(segments);
+  const syncMapPath = path.join(folderPath, `${promoName}_syncMap.json`);
+  fs.writeFileSync(syncMapPath, JSON.stringify(syncedSegments, null, 2));
+
+  // ✅ Update DB with paths
+  attemptDoc.videoPath = relativePath;
+  if (imagePath) attemptDoc.imagePath = imagePath;
+  if (audioPath) attemptDoc.audioPath = audioPath;
+  attemptDoc.syncMap = syncedSegments;
+
+  await attemptDoc.save();
+
+  return res.status(200).json({
+    message: '✅ Video created (mock)',
+    videoPath: relativePath,
+    syncMap: syncedSegments,
+    userId,
+    promoName,
+    type
+  });
+});
+
+// ✅ Finalize Ad
+router.post('/finalize', async (req, res) => {
+  try {
+    const { userId, promoName } = req.body;
+    if (!userId || !promoName) {
+      return res.status(400).json({ error: 'Missing userId or promoName' });
+    }
+
+    const attemptDoc = await AdAttempt.findOne({ userId, promoName });
+    if (!attemptDoc) {
+      return res.status(404).json({ error: 'No ad attempt found for this user and promo' });
+    }
+
+    if (attemptDoc.isFinal) {
+      return res.status(409).json({ message: 'Ad is already finalized' });
+    }
+
+    attemptDoc.set({
+      isFinal: true,
+      finalizedAt: new Date()
+    });
+    attemptDoc.markModified('finalizedAt');
+    await attemptDoc.save();
+
+    return res.status(200).json({
+      message: '✅ Ad finalized successfully',
+      isFinal: true,
+      finalizedAt: attemptDoc.finalizedAt,
+      attemptCount: attemptDoc.attemptCount
+    });
+  } catch (err) {
+    console.error('❌ Finalization error:', err.message);
+    return res.status(500).json({ error: 'Failed to finalize ad', details: err.message });
+  }
+});
+
+// ✅ Status Check for Ad
+router.get('/status', async (req, res) => {
+  const { userId, promoName } = req.query;
+
+  if (!userId || !promoName) {
+    return res.status(400).json({ error: 'Missing userId or promoName in query' });
+  }
+
+  try {
+    const attemptDoc = await AdAttempt.findOne({ userId, promoName });
+    if (!attemptDoc) {
+      return res.status(404).json({ error: 'Ad attempt not found' });
+    }
+
+    return res.status(200).json({
+      isFinal: attemptDoc.isFinal || false,
+      finalizedAt: attemptDoc.finalizedAt || null,
+      attemptCount: attemptDoc.attemptCount || 0
+    });
+  } catch (err) {
+    console.error('❌ Status check error:', err.message);
+    return res.status(500).json({ error: 'Internal server error', details: err.message });
+  }
+});
+
+module.exports = router;

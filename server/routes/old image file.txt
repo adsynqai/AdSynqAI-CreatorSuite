@@ -1,0 +1,86 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const router = express.Router();
+const AdAttempt = require('../models/AdAttempt');
+
+const USE_DB = false; // Toggle to true when ready for DB-only mode
+
+// ✅ POST: Generate or Attach Image
+router.post('/', async (req, res) => {
+  const { userId, promoName, prompt, imageStyle } = req.body;
+
+  if (!userId || !promoName || !prompt) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // 🔒 Check for finalized ad
+  let existing = await AdAttempt.findOne({ userId, promoName });
+  if (existing && existing.isFinal) {
+    return res.status(409).json({ error: 'Ad already finalized' });
+  }
+
+  // ✅ Local file save path
+  const imageName = `image_${Date.now()}.jpg`;
+  const folderPath = path.join(__dirname, '..', 'output', 'images', userId);
+  const fullImagePath = path.join(folderPath, imageName);
+  const imagePathForDB = path.join('output', 'images', userId, imageName);
+
+  // 🛠️ Ensure directory exists
+  if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
+
+// Base64-encoded 1x1 white pixel JPG
+const base64Image = '/9j/4AAQSkZJRgABAQEAYABgAAD/2wCEAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAALCAABAAEBAREA/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAwT/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwD2AAAAAAD/2Q==';
+
+
+try {
+  fs.writeFileSync(fullImagePath, Buffer.from(base64Image, 'base64'));
+
+  console.log('✅ Image file created:', fullImagePath);
+} catch (err) {
+  console.error('❌ Failed to write image:', err);
+}
+
+  // ✅ DB or fallback to local log
+  if (USE_DB) {
+    if (existing) {
+      existing.imagePath = imagePathForDB;
+      await existing.save();
+    } else {
+      await AdAttempt.create({
+        userId,
+        promoName,
+        prompt,
+        type: 'image',
+        imagePath: imagePathForDB
+      });
+    }
+  } else {
+    const logPath = path.join(folderPath, 'log.json');
+    const record = {
+      userId,
+      promoName,
+      prompt,
+      type: 'image',
+      imagePath: imagePathForDB,
+      createdAt: new Date()
+    };
+
+    // Append to or create log
+    const existingLogs = fs.existsSync(logPath)
+      ? JSON.parse(fs.readFileSync(logPath))
+      : [];
+    existingLogs.push(record);
+    fs.writeFileSync(logPath, JSON.stringify(existingLogs, null, 2));
+  }
+
+  return res.status(200).json({
+    message: '✅ Image generated (mock)',
+    imagePath: imagePathForDB,
+    userId,
+    promoName,
+    style: imageStyle || 'default'
+  });
+});
+
+module.exports = router;

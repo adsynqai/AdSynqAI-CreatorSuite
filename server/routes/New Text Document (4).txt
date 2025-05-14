@@ -1,0 +1,8 @@
+const express = require('express');
+const router = express.Router();
+const { generateVideo } = require('../services/videoService');
+
+// POST /api/video
+router.post('/', generateVideo);
+
+module.exports = router;

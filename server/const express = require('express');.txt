@@ -1,0 +1,98 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+const router = express.Router();
+const AdAttempt = require('../models/AdAttempt');
+
+const USE_DB = false; // Toggle to true when using DB exclusively
+
+// ✅ POST: Generate or Attach Image
+router.post('/', async (req, res) => {
+  const { userId, promoName, prompt, imageStyle } = req.body;
+  if (!userId || !promoName || !prompt) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // 🔒 Check finalized in DB if needed
+  let existing = USE_DB ? await AdAttempt.findOne({ userId, promoName }) : null;
+  if (existing && existing.isFinal) {
+    return res.status(409).json({ error: 'Ad already finalized' });
+  }
+
+  // 📁 Prepare output folder & file path
+  const folderPath = path.join(__dirname, '..', 'output', 'images', userId);
+  if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
+
+  const imageName = `image_${Date.now()}.png`;
+  const fullImagePath = path.join(folderPath, imageName);
+  const imagePathForDB = path.join('output', 'images', userId, imageName);
+
+  // 🔗 Download a real placeholder image (512×512)
+  const placeholderUrl = 'https://via.placeholder.com/512.png?text=Ad+Preview';
+  try {
+    await new Promise((resolve, reject) => {
+      const file = fs.createWriteStream(fullImagePath);
+      https.get(placeholderUrl, (resp) => {
+        if (resp.statusCode !== 200) {
+          return reject(new Error(`Image download failed with status ${resp.statusCode}`));
+        }
+        resp.pipe(file);
+        file.on('finish', () => {
+          file.close(resolve);
+        });
+      }).on('error', (err) => {
+        fs.unlinkSync(fullImagePath);
+        reject(err);
+      });
+    });
+  } catch (err) {
+    console.error('❌ Error downloading placeholder:', err.message);
+    return res.status(500).json({
+      error: 'Failed to generate image file',
+      details: err.message
+    });
+  }
+
+  // ✅ Persist path in DB or local log
+  if (USE_DB) {
+    if (existing) {
+      existing.imagePath = imagePathForDB;
+      await existing.save();
+    } else {
+      await AdAttempt.create({
+        userId,
+        promoName,
+        prompt,
+        type: 'image',
+        imagePath: imagePathForDB
+      });
+    }
+  } else {
+    const logPath = path.join(folderPath, 'log.json');
+    const record = {
+      userId,
+      promoName,
+      prompt,
+      type: 'image',
+      imagePath: imagePathForDB,
+      createdAt: new Date()
+    };
+    const existingLogs = fs.existsSync(logPath)
+      ? JSON.parse(fs.readFileSync(logPath))
+      : [];
+    existingLogs.push(record);
+    fs.writeFileSync(logPath, JSON.stringify(existingLogs, null, 2));
+  }
+
+  // 🏁 Response
+  return res.status(200).json({
+    message: '✅ Image generated (mock)',
+    imagePath: imagePathForDB,
+    userId,
+    promoName,
+    style: imageStyle || 'default'
+  });
+});
+
+module.exports = router;

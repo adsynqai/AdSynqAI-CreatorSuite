@@ -1,0 +1,114 @@
+// routes/image.js
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { Configuration, OpenAIApi } = require('openai');
+const router = express.Router();
+const AdAttempt = require('../models/AdAttempt');
+
+const USE_DB = false; // set to true to store paths in MongoDB
+
+// ——— OpenAI setup ———
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY
+});
+const openai = new OpenAIApi(configuration);
+
+// ✅ POST: Generate or Attach Image via DALL·E
+router.post('/', async (req, res) => {
+  const { userId, promoName, prompt, imageStyle } = req.body;
+  if (!userId || !promoName || !prompt) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  // 🔒 If using DB, check for finalized ad
+  let existing = null;
+  if (USE_DB) {
+    existing = await AdAttempt.findOne({ userId, promoName });
+    if (existing && existing.isFinal) {
+      return res.status(409).json({ error: 'Ad already finalized' });
+    }
+  }
+
+  // 📁 Ensure user’s output folder exists
+  const folderPath = path.join(__dirname, '..', 'output', 'images', userId);
+  if (!fs.existsSync(folderPath)) fs.mkdirSync(folderPath, { recursive: true });
+
+  // 🎯 File naming
+  const imageName = `image_${Date.now()}.png`;
+  const fullImagePath = path.join(folderPath, imageName);
+  const imagePathForDB = path.join('output', 'images', userId, imageName);
+
+  // 🖼️ Call DALL·E
+  let b64data;
+  try {
+    const response = await openai.createImage({
+      prompt: `${prompt}, style: ${imageStyle || 'default'}`,
+      n: 1,
+      size: '512x512',
+      response_format: 'b64_json'
+    });
+    b64data = response.data.data[0].b64_json;
+  } catch (err) {
+    console.error('❌ OpenAI error:', err);
+    return res.status(500).json({
+      error: 'Image generation failed',
+      details: err.message
+    });
+  }
+
+  // 💾 Write image to disk
+  try {
+    fs.writeFileSync(fullImagePath, Buffer.from(b64data, 'base64'));
+  } catch (err) {
+    console.error('❌ File write error:', err);
+    return res.status(500).json({
+      error: 'Failed to save image file',
+      details: err.message
+    });
+  }
+
+  // 🗃️ Persist path in DB or local log
+  if (USE_DB) {
+    if (existing) {
+      existing.imagePath = imagePathForDB;
+      await existing.save();
+    } else {
+      await AdAttempt.create({
+        userId,
+        promoName,
+        prompt,
+        type: 'image',
+        imagePath: imagePathForDB
+      });
+    }
+  } else {
+    const logPath = path.join(folderPath, 'log.json');
+    const record = {
+      userId,
+      promoName,
+      prompt,
+      type: 'image',
+      imagePath: imagePathForDB,
+      createdAt: new Date()
+    };
+    const logs = fs.existsSync(logPath)
+      ? JSON.parse(fs.readFileSync(logPath))
+      : [];
+    logs.push(record);
+    fs.writeFileSync(logPath, JSON.stringify(logs, null, 2));
+  }
+
+  // 🚀 Build and return public URL
+  const imageUrl = `${req.protocol}://${req.get('host')}/images/${userId}/${imageName}`;
+  return res.status(200).json({
+    message: '✅ Image generated',
+    imageUrl,
+    imagePath: imagePathForDB,
+    userId,
+    promoName,
+    style: imageStyle || 'default'
+  });
+});
+
+module.exports = router;
