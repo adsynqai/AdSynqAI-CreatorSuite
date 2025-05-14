@@ -1,0 +1,35 @@
+POST  http://localhost:5000/api/image
+
+Request:
+{
+  "userId": "test_user_001",
+  "promoName": "spring_sale_demo",
+  "prompt": "Don't miss our Spring Sale! Huge discounts available now. Shop smart, save big.",
+  "imageStyle": "minimalist"
+}
+
+Response:
+{
+    "message": "✅ Image generated (mock)",
+    "imagePath": "output\\images\\test_user_001\\image_1746528201428.jpg",
+    "userId": "test_user_001",
+    "promoName": "spring_sale_demo",
+    "style": "minimalist"
+}
+
+POST http://localhost:5000/api/voice
+Request:
+{
+  "userId": "test_user_001",
+  "promoName": "spring_sale_demo",
+  "prompt": "Don't miss our Spring Sale! Huge discounts available now. Shop smart, save big.",
+  "voiceStyle": "energetic_female"
+}
+Response:
+{
+    "message": "✅ Voice generated (mock)",
+    "audioPath": "output\\audio\\test_user_001\\audio_1746528252155.mp3",
+    "userId": "test_user_001",
+    "promoName": "spring_sale_demo",
+    "voiceStyle": "energetic_female"
+}
